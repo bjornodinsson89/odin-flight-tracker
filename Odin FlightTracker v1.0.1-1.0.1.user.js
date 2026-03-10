@@ -46,6 +46,37 @@
         CONFIG.enemyPollInterval = Math.max(15000, toNum(CONFIG.enemyPollInterval) || 30000);
     })();
 
+
+    (function normalizeLoadedConfig() {
+        let at = CONFIG.alertSettings;
+        if (!at || typeof at !== 'object') at = {};
+        let tiers = at.tiers;
+        if (!tiers || typeof tiers !== 'object') tiers = {};
+        CONFIG.alertSettings = {
+            enabled: at.enabled !== false,
+            tiers: {
+                600: tiers[600] !== false,
+                300: tiers[300] !== false,
+                60: tiers[60] !== false
+            },
+            sound: at.sound !== false,
+            vibration: at.vibration !== false,
+            debug: !!at.debug,
+            historyLimit: Math.max(10, Number(at.historyLimit) || 50)
+        };
+
+        let mt = CONFIG.manualTarget;
+        if (!mt || typeof mt !== 'object') mt = { type: 'faction', id: null };
+        CONFIG.manualTarget = {
+            type: mt.type === 'user' ? 'user' : 'faction',
+            id: sanitizeId(mt.id)
+        };
+
+        CONFIG.trackingMode = CONFIG.trackingMode === 'manual' ? 'manual' : 'auto';
+        CONFIG.trackFaction = CONFIG.trackFaction !== false;
+        CONFIG.trackEnemies = CONFIG.trackEnemies !== false;
+    })();
+
     function saveConfig() {
         GM_setValue('odin_ft_apikey', CONFIG.apiKey);
         GM_setValue('odin_ft_trackfaction', CONFIG.trackFaction);
@@ -467,10 +498,11 @@
     function normalizeStatus(statusObj) {
         if (!statusObj || typeof statusObj !== 'object') return null;
 
-        let state = String(statusObj.state || '');
-        let desc = String(statusObj.description || '');
-        let traveling = state === 'Traveling';
-        let abroad = state === 'Abroad';
+        let state = String(statusObj.state || statusObj.type || '').trim();
+        let stateLower = state.toLowerCase();
+        let desc = String(statusObj.description || statusObj.details || '');
+        let traveling = stateLower === 'traveling' || stateLower === 'travelling';
+        let abroad = stateLower === 'abroad';
 
         let planeType = normalizePlaneType(statusObj.plane_image_type || statusObj.planeType);
 
@@ -482,7 +514,8 @@
             if (destMatch) locationKey = normalizeDestination(destMatch[1]);
         }
 
-        return { state, description: desc, traveling, abroad, planeType, locationKey, raw: statusObj };
+        let stateDisplay = stateLower ? (stateLower[0].toUpperCase() + stateLower.slice(1)) : state;
+        return { state: stateDisplay, description: desc, traveling, abroad, planeType, locationKey, raw: statusObj };
     }
 
     async function apiRequest(endpoint, key) {
@@ -491,8 +524,19 @@
         await apiRateLimiter.waitForSlot();
         apiRateLimiter.record();
 
-        let url = `https://api.torn.com/v2/${endpoint}?comment=OdinFlightTracker`;
-        let headers = { 'Authorization': `ApiKey ${key || CONFIG.apiKey}` };
+        let apiKey = key || CONFIG.apiKey;
+        let url = new URL(`https://api.torn.com/v2/${endpoint}`);
+        if (!url.searchParams.has('comment')) {
+            url.searchParams.set('comment', 'OdinFlightTracker');
+        }
+        if (!url.searchParams.has('key')) {
+            url.searchParams.set('key', apiKey);
+        }
+
+        let headers = {
+            'Authorization': `ApiKey ${apiKey}`,
+            'X-API-Key': apiKey
+        };
 
         try {
             let response = await fetch(url, { headers });
@@ -500,7 +544,10 @@
             if (!response.ok) return null;
             let data = await response.json();
             if (data && data.error) {
-                console.error(`API Error ${data.code}: ${data.error}`);
+                let err = data.error;
+                let code = (err && typeof err === 'object') ? err.code : data.code;
+                let msg = (err && typeof err === 'object') ? err.error : data.error;
+                console.error(`API Error ${code || 'unknown'}: ${msg || 'Unknown error'}`);
                 return null;
             }
             return data;
@@ -510,20 +557,30 @@
     }
 
     async function fetchFactionMembers(factionId) {
-        let endpoint = factionId ? `faction/${factionId}/members` : 'faction/members';
-        let data = await apiRequest(endpoint, CONFIG.apiKey);
-        if (!data || !data.members) return [];
+        let candidates = factionId
+            ? [`faction/${factionId}/members`, `faction/${factionId}?selections=members`]
+            : ['faction/members', 'faction?selections=members'];
 
-        let membersRaw = data.members;
+        let membersRaw = null;
+        for (let endpoint of candidates) {
+            let data = await apiRequest(endpoint, CONFIG.apiKey);
+            if (!data) continue;
+            membersRaw = data.members || data.faction?.members || null;
+            if (membersRaw) break;
+        }
+        if (!membersRaw) return [];
+
+        let memberList = Array.isArray(membersRaw) ? membersRaw : Object.values(membersRaw);
         let out = [];
 
-        membersRaw.forEach(mm => {
-            let id = sanitizeId(mm.id);
+        memberList.forEach(mm => {
+            if (!mm || typeof mm !== 'object') return;
+            let id = sanitizeId(mm.id || mm.player_id || mm.user_id);
             if (!id) return;
             out.push({
                 id,
-                name: mm.name || '',
-                status: normalizeStatus(mm.status || null),
+                name: mm.name || mm.player_name || '',
+                status: normalizeStatus(mm.status || mm.state || null),
                 raw: mm
             });
         });
@@ -533,31 +590,33 @@
 
     async function fetchUserStatus(userId) {
         let safeId = sanitizeId(userId);
-        let endpoint = safeId ? `user/${safeId}` : 'user';
-        let data = await apiRequest(endpoint);
+        let candidates = safeId
+            ? [`user/${safeId}`, `user/${safeId}?selections=profile,basic`]
+            : ['user', 'user?selections=profile,basic'];
+
+        let data = null;
+        for (let endpoint of candidates) {
+            data = await apiRequest(endpoint);
+            if (data) break;
+        }
         if (!data) return null;
 
-        let profile = data;
-        if (data.profile) profile = data.profile;
+        let profile = data.profile || data.player || data;
+        let statusObj = profile.status || profile.basic?.status || data.status || data.basic?.status || null;
+
         return {
             id: safeId || sanitizeId(profile.player_id || profile.id),
-            name: profile.name || 'Unknown',
-            status: normalizeStatus(profile.status || profile.basic?.status || null)
+            name: profile.name || profile.player_name || 'Unknown',
+            status: normalizeStatus(statusObj)
         };
     }
 
     async function updateMyLocation() {
-        let data = await apiRequest('user');
-        if (!data) return;
+        let me = await fetchUserStatus(null);
+        if (!me || !me.status) return;
 
-        let profile = data.profile || data;
-        let rawStatus = profile.status || profile.basic?.status;
-        if (!rawStatus) return;
-
-        let status = normalizeStatus(rawStatus);
-        if (!status) return;
-
-        MY_STATUS = status.state;
+        let status = me.status;
+        MY_STATUS = status.abroad ? 'Abroad' : (status.traveling ? 'Traveling' : status.state || 'Unknown');
 
         if (status.traveling) {
             MY_LOCATION = 'traveling';
@@ -566,6 +625,8 @@
         } else {
             MY_LOCATION = 'torn';
         }
+
+        markUIDirty();
     }
 
     let pollTimer = null;
@@ -587,6 +648,7 @@
                     trackedPersons.set(member.id, tracked);
                 }
                 tracked.isFactionMember = true;
+                tracked.isManual = false;
                 tracked.name = member.name || tracked.name;
                 tracked.updateFromStatus(member.status);
             }
@@ -598,6 +660,8 @@
             });
 
             persistTrackedState();
+        } catch (e) {
+            console.error('Odin FlightTracker: faction poll failed', e);
         } finally {
             isPolling = false;
         }
@@ -715,9 +779,14 @@
         if (enemyPollTimer) clearInterval(enemyPollTimer);
 
         async function poll() {
-            await pollFaction();
-            if (CONFIG.trackingMode === 'manual') {
-                await pollManualTarget();
+            try {
+                if (CONFIG.trackingMode === 'manual') {
+                    await pollManualTarget();
+                } else if (CONFIG.trackFaction) {
+                    await pollFaction();
+                }
+            } catch (e) {
+                console.error('Odin FlightTracker: poll loop failed', e);
             }
             markUIDirty();
         }
