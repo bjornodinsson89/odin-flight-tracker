@@ -529,13 +529,12 @@
         if (!url.searchParams.has('comment')) {
             url.searchParams.set('comment', 'OdinFlightTracker');
         }
-        if (!url.searchParams.has('key')) {
-            url.searchParams.set('key', apiKey);
-        }
 
+        // Keep auth to the single documented header only.
+        // The added X-API-Key header in newer builds forces a stricter CORS preflight
+        // that Torn does not always allow, which causes every request to fail.
         let headers = {
-            'Authorization': `ApiKey ${apiKey}`,
-            'X-API-Key': apiKey
+            'Authorization': `ApiKey ${apiKey}`
         };
 
         try {
@@ -629,7 +628,8 @@
         markUIDirty();
     }
 
-    let pollTimer = null;
+    let factionPollTimer = null;
+    let manualPollTimer = null;
     let enemyPollTimer = null;
     let isPolling = false;
 
@@ -775,27 +775,35 @@
     }
 
     function startPolling() {
-        if (pollTimer) clearInterval(pollTimer);
+        if (factionPollTimer) clearInterval(factionPollTimer);
+        if (manualPollTimer) clearInterval(manualPollTimer);
         if (enemyPollTimer) clearInterval(enemyPollTimer);
 
-        async function poll() {
-            try {
-                if (CONFIG.trackingMode === 'manual') {
-                    await pollManualTarget();
-                } else if (CONFIG.trackFaction) {
+        if (CONFIG.trackFaction) {
+            let runFactionPoll = async () => {
+                try {
                     await pollFaction();
+                } catch (e) {
+                    console.error('Odin FlightTracker: faction poll loop failed', e);
                 }
-            } catch (e) {
-                console.error('Odin FlightTracker: poll loop failed', e);
-            }
-            markUIDirty();
+                markUIDirty();
+            };
+            runFactionPoll();
+            factionPollTimer = setInterval(runFactionPoll, CONFIG.factionPollInterval);
         }
 
-        poll();
-        let activePollInterval = CONFIG.trackingMode === 'manual'
-            ? CONFIG.manualPollInterval
-            : CONFIG.factionPollInterval;
-        pollTimer = setInterval(poll, activePollInterval);
+        if (CONFIG.trackingMode === 'manual') {
+            let runManualPoll = async () => {
+                try {
+                    await pollManualTarget();
+                } catch (e) {
+                    console.error('Odin FlightTracker: manual poll loop failed', e);
+                }
+                markUIDirty();
+            };
+            runManualPoll();
+            manualPollTimer = setInterval(runManualPoll, CONFIG.manualPollInterval);
+        }
 
         if (CONFIG.trackingMode === 'auto' && CONFIG.trackEnemies) {
             pollEnemies();
@@ -1886,7 +1894,8 @@
     }
 
     function resetAllData() {
-        if (pollTimer) clearInterval(pollTimer);
+        if (factionPollTimer) clearInterval(factionPollTimer);
+        if (manualPollTimer) clearInterval(manualPollTimer);
         if (enemyPollTimer) clearInterval(enemyPollTimer);
         if (countdownTimer) clearInterval(countdownTimer);
         if (myLocationTimer) clearInterval(myLocationTimer);
