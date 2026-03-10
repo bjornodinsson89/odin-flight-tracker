@@ -529,13 +529,12 @@
         if (!url.searchParams.has('comment')) {
             url.searchParams.set('comment', 'OdinFlightTracker');
         }
-        if (!url.searchParams.has('key')) {
-            url.searchParams.set('key', apiKey);
-        }
 
+        // Keep auth to the single documented header only.
+        // The added X-API-Key header in newer builds forces a stricter CORS preflight
+        // that Torn does not always allow, which causes every request to fail.
         let headers = {
-            'Authorization': `ApiKey ${apiKey}`,
-            'X-API-Key': apiKey
+            'Authorization': `ApiKey ${apiKey}`
         };
 
         try {
