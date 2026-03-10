@@ -539,7 +539,7 @@
         };
 
         try {
-            let response = await fetch(url.toString(), { headers });
+            let response = await fetch(url, { headers });
             syncTornTimeFromResponse(response);
             if (!response.ok) return null;
             let data = await response.json();
