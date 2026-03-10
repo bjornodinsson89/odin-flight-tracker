@@ -496,7 +496,7 @@
 
         try {
             let response = await fetch(url, { headers });
-            syncTornServerTimeFromResponse(response);
+            syncTornTimeFromResponse(response);
             if (!response.ok) return null;
             let data = await response.json();
             if (data && data.error) {
@@ -656,6 +656,7 @@
                         tracked = new TrackedPerson(member.id, member.name);
                         trackedPersons.set(member.id, tracked);
                     }
+                    tracked.isManual = true;
                     tracked.isEnemy = true;
                     tracked.isFactionMember = false;
                     tracked.name = member.name || tracked.name;
@@ -683,9 +684,9 @@
 
                 if (!tracked) {
                     tracked = new TrackedPerson(CONFIG.manualTarget.id, userData.name);
-                    tracked.isManual = true;
                     trackedPersons.set(CONFIG.manualTarget.id, tracked);
                 }
+                tracked.isManual = true;
                 tracked.isEnemy = true;
                 tracked.isFactionMember = false;
                 tracked.name = userData.name || tracked.name;
@@ -722,7 +723,10 @@
         }
 
         poll();
-        pollTimer = setInterval(poll, CONFIG.factionPollInterval);
+        let activePollInterval = CONFIG.trackingMode === 'manual'
+            ? CONFIG.manualPollInterval
+            : CONFIG.factionPollInterval;
+        pollTimer = setInterval(poll, activePollInterval);
 
         if (CONFIG.trackingMode === 'auto' && CONFIG.trackEnemies) {
             pollEnemies();
