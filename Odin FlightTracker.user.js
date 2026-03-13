@@ -9,8 +9,8 @@
 // @grant        GM_setValue
 // @grant        GM.getValue
 // @grant        GM.setValue
-// @downloadURL  https://raw.githubusercontent.com/bjornodinsson89/odin-flight-tracker/main/Odin%20FlightTracker%20v1.0.6.user.js
-// @updateURL    https://raw.githubusercontent.com/bjornodinsson89/odin-flight-tracker/main/Odin%20FlightTracker%20v1.0.6.user.js
+// @downloadURL  https://raw.githubusercontent.com/bjornodinsson89/odin-flight-tracker/main/Odin%20FlightTracker%20.user.js
+// @updateURL    https://raw.githubusercontent.com/bjornodinsson89/odin-flight-tracker/main/Odin%20FlightTracker%20.user.js
 // @run-at       document-idle
 // ==/UserScript==
 
