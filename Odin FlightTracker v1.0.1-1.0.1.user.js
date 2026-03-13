@@ -6,6 +6,8 @@
 // @match        https://www.torn.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @downloadURL  https://raw.githubusercontent.com/bjornodinsson89/odin-flight-tracker/main/Odin%20FlightTracker%20v1.0.1-1.0.1.user.js
+// @updateURL    https://raw.githubusercontent.com/bjornodinsson89/odin-flight-tracker/main/Odin%20FlightTracker%20v1.0.1-1.0.1.meta.js
 // @run-at       document-idle
 // ==/UserScript==
 
