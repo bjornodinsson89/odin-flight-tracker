@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Odin FlightTracker v1.0.3
-// @version      1.0.5
+// @version      1.0.6
 // @description  Flight Tracking
 // @author       BjornOdinsson89
 // @icon         https://i.postimg.cc/BQ6bSYKM/file-000000004bb071f5a96fc52564bf26ad-(1).png
@@ -9,8 +9,8 @@
 // @grant        GM_setValue
 // @grant        GM.getValue
 // @grant        GM.setValue
-// @downloadURL  https://raw.githubusercontent.com/bjornodinsson89/odin-flight-tracker/main/Odin%20FlightTracker%20v1.0.4.user.js
-// @updateURL    https://raw.githubusercontent.com/bjornodinsson89/odin-flight-tracker/main/Odin%20FlightTracker%20v1.0.4.user.js
+// @downloadURL  https://raw.githubusercontent.com/bjornodinsson89/odin-flight-tracker/main/Odin%20FlightTracker%20v1.0.6.user.js
+// @updateURL    https://raw.githubusercontent.com/bjornodinsson89/odin-flight-tracker/main/Odin%20FlightTracker%20v1.0.6.user.js
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -161,9 +161,9 @@
             let n = Number(v);
             return (Number.isFinite(n) && n > 0) ? n : null;
         };
-        CONFIG.factionPollInterval = Math.max(15000, toNum(CONFIG.factionPollInterval) || 30000);
-        CONFIG.manualPollInterval = Math.max(15000, toNum(CONFIG.manualPollInterval) || 30000);
-        CONFIG.enemyPollInterval = Math.max(15000, toNum(CONFIG.enemyPollInterval) || 30000);
+        CONFIG.factionPollInterval = toNum(CONFIG.factionPollInterval) || DEFAULT_CONFIG.factionPollInterval;
+        CONFIG.manualPollInterval = toNum(CONFIG.manualPollInterval) || DEFAULT_CONFIG.manualPollInterval;
+        CONFIG.enemyPollInterval = toNum(CONFIG.enemyPollInterval) || DEFAULT_CONFIG.enemyPollInterval;
 
         let at = CONFIG.alertSettings;
         if (!at || typeof at !== 'object') at = {};
@@ -1152,67 +1152,68 @@
         }, 1000);
     }
 
-    function extractFactionIdFromHref(href) {
-        let raw = String(href || '');
-        if (!raw) return null;
-
-        let patterns = [
-            /[?&]factionID=(\d+)/i,
-            /factions\.php\?[^#]*step=profile[^#]*[?&]ID=(\d+)/i,
-            /[?&]ID=(\d+)/i
-        ];
-
-        for (let re of patterns) {
-            let match = raw.match(re);
-            if (!match) continue;
-            let id = sanitizeId(match[1]);
-            if (id) return id;
-        }
-
-        return null;
-    }
-
-    function getFactionIdFromPage() {
-        if (!location.href.includes('factions.php')) return null;
-
-        let fromUrl = null;
-        try {
-            let url = new URL(location.href);
-            if ((url.searchParams.get('step') || '').toLowerCase() === 'profile') {
-                fromUrl = sanitizeId(url.searchParams.get('ID'));
-            }
-        } catch (_) {}
-        if (fromUrl) return fromUrl;
-
-        let forumThread = document.querySelector('.forum-thread[href]');
-        let forumHref = forumThread ? (forumThread.getAttribute('href') || forumThread.href) : null;
-        let fromForum = extractFactionIdFromHref(forumHref);
-        if (fromForum) return fromForum;
-
-        let viewWars = document.querySelector('.view-wars[href]');
-        let viewWarsHref = viewWars ? (viewWars.getAttribute('href') || viewWars.href) : null;
-        let fromWars = extractFactionIdFromHref(viewWarsHref);
-        if (fromWars) return fromWars;
-
-        return null;
-    }
-
-    function updateFactionTitleWithId() {
-        if (!location.href.includes('factions.php') || location.href.includes('rankedwar')) return;
-
+    function displayFactionId(factionId) {
         let titleEl = document.getElementById('skip-to-content');
-        if (!titleEl) return;
-
-        let factionId = getFactionIdFromPage();
-        if (!factionId) return;
+        if (!titleEl) {
+            setTimeout(() => displayFactionId(factionId), 100);
+            return;
+        }
 
         let currentText = (titleEl.textContent || '').trim();
         if (!currentText) return;
 
         let baseText = currentText.replace(/\s*\[\d+\]\s*$/, '').trim();
-        let nextText = `${baseText} [${factionId}]`;
+        titleEl.textContent = `${baseText} [${factionId.trim()}]`;
+    }
 
-        if (currentText !== nextText) titleEl.textContent = nextText;
+    function findYourFactionId() {
+        let forumThread = document.querySelector('.forum-thread');
+        if (!forumThread) {
+            setTimeout(findYourFactionId, 100);
+            return;
+        }
+
+        let href = forumThread.getAttribute('href') || forumThread.href || '';
+        let factionId = href.replace('/forums.php#!p=forums&f=999&b=1&a=','');
+        displayFactionId(factionId);
+    }
+
+    function findOtherFactionId() {
+        if (window.location.href.includes('profile&ID=')) {
+            let factionId = window.location.href.replace('https://www.torn.com/factions.php?step=profile&ID=', '').split('&')[0];
+            displayFactionId(factionId);
+        } else {
+            let viewWars = document.querySelector('.view-wars');
+            if (!viewWars) {
+                setTimeout(findOtherFactionId, 100);
+                return;
+            }
+
+            let href = viewWars.getAttribute('href') || viewWars.href || '';
+            let factionId = href.replace('/page.php?sid=factionWarfare#/ranked/','');
+            displayFactionId(factionId);
+        }
+    }
+
+    function updateFactionTitleWithId() {
+        if (!location.href.includes('factions.php') || location.href.includes('rankedwar')) return;
+
+        if (window.location.href.includes('profile&ID=')) {
+            findOtherFactionId();
+            return;
+        }
+
+        if (document.querySelector('.forum-thread')) {
+            findYourFactionId();
+            return;
+        }
+
+        if (document.querySelector('.view-wars')) {
+            findOtherFactionId();
+            return;
+        }
+
+        findYourFactionId();
     }
 
     function getPageContext() {
@@ -1873,9 +1874,13 @@
                 CONFIG.apiKey = apiKeyInput;
             }
 
-            CONFIG.factionPollInterval = Math.max(15000, parseInt(modal.querySelector('#odin-pollinterval-faction').value) || 30000);
-            CONFIG.enemyPollInterval = Math.max(15000, parseInt(modal.querySelector('#odin-pollinterval-enemy').value) || 30000);
-            CONFIG.manualPollInterval = Math.max(15000, parseInt(modal.querySelector('#odin-pollinterval-manual').value) || 30000);
+            let parseInterval = (value, fallback) => {
+                let parsed = parseInt(value, 10);
+                return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+            };
+            CONFIG.factionPollInterval = parseInterval(modal.querySelector('#odin-pollinterval-faction').value, DEFAULT_CONFIG.factionPollInterval);
+            CONFIG.enemyPollInterval = parseInterval(modal.querySelector('#odin-pollinterval-enemy').value, DEFAULT_CONFIG.enemyPollInterval);
+            CONFIG.manualPollInterval = parseInterval(modal.querySelector('#odin-pollinterval-manual').value, DEFAULT_CONFIG.manualPollInterval);
             CONFIG.trackingMode = modal.querySelector('input[name="tracking-mode"]:checked').value;
             CONFIG.manualTarget.type = modal.querySelector('#manual-type').value;
             CONFIG.manualTarget.id = parseInt(modal.querySelector('#manual-id').value) || null;
