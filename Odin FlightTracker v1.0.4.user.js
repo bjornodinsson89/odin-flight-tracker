@@ -1152,6 +1152,69 @@
         }, 1000);
     }
 
+    function extractFactionIdFromHref(href) {
+        let raw = String(href || '');
+        if (!raw) return null;
+
+        let patterns = [
+            /[?&]factionID=(\d+)/i,
+            /factions\.php\?[^#]*step=profile[^#]*[?&]ID=(\d+)/i,
+            /[?&]ID=(\d+)/i
+        ];
+
+        for (let re of patterns) {
+            let match = raw.match(re);
+            if (!match) continue;
+            let id = sanitizeId(match[1]);
+            if (id) return id;
+        }
+
+        return null;
+    }
+
+    function getFactionIdFromPage() {
+        if (!location.href.includes('factions.php')) return null;
+
+        let fromUrl = null;
+        try {
+            let url = new URL(location.href);
+            if ((url.searchParams.get('step') || '').toLowerCase() === 'profile') {
+                fromUrl = sanitizeId(url.searchParams.get('ID'));
+            }
+        } catch (_) {}
+        if (fromUrl) return fromUrl;
+
+        let forumThread = document.querySelector('.forum-thread[href]');
+        let forumHref = forumThread ? (forumThread.getAttribute('href') || forumThread.href) : null;
+        let fromForum = extractFactionIdFromHref(forumHref);
+        if (fromForum) return fromForum;
+
+        let viewWars = document.querySelector('.view-wars[href]');
+        let viewWarsHref = viewWars ? (viewWars.getAttribute('href') || viewWars.href) : null;
+        let fromWars = extractFactionIdFromHref(viewWarsHref);
+        if (fromWars) return fromWars;
+
+        return null;
+    }
+
+    function updateFactionTitleWithId() {
+        if (!location.href.includes('factions.php') || location.href.includes('rankedwar')) return;
+
+        let titleEl = document.getElementById('skip-to-content');
+        if (!titleEl) return;
+
+        let factionId = getFactionIdFromPage();
+        if (!factionId) return;
+
+        let currentText = (titleEl.textContent || '').trim();
+        if (!currentText) return;
+
+        let baseText = currentText.replace(/\s*\[\d+\]\s*$/, '').trim();
+        let nextText = `${baseText} [${factionId}]`;
+
+        if (currentText !== nextText) titleEl.textContent = nextText;
+    }
+
     function getPageContext() {
         let url = location.href;
         return {
@@ -1169,6 +1232,7 @@
         if (stray) stray.remove();
 
         if (ctx.faction || ctx.war) updateFactionRoster();
+        if (ctx.faction && !ctx.war) updateFactionTitleWithId();
         if (ctx.enemy) updateEnemyRoster();
         if (ctx.profile) updateProfileFlightBannerOverlay();
 
@@ -2057,6 +2121,7 @@
             debounceTimer = setTimeout(() => {
                 injectSettingsMenuEntry();
                 injectHeaderButton();
+                updateFactionTitleWithId();
                 markUIDirty();
             }, 100);
         });
