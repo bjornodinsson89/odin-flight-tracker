@@ -1,6 +1,6 @@
 // ==UserScript==
-// @name         Odin FlightTracker v1.0.1
-// @version      1.0.1
+// @name         Odin FlightTracker v1.0.3
+// @version      1.0.3
 // @description  Flight Tracking
 // @author       BjornOdinsson89
 // @match        https://www.torn.com/*
