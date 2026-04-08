@@ -1,6 +1,6 @@
 // ==UserScript==
-// @name         Odin FlightTracker v1.0.3
-// @version      1.0.6
+// @name         Odin FlightTracker v1.0.7
+// @version      1.0.7
 // @description  Flight Tracking
 // @author       BjornOdinsson89
 // @icon         https://i.postimg.cc/BQ6bSYKM/file-000000004bb071f5a96fc52564bf26ad-(1).png
@@ -10,7 +10,7 @@
 // @grant        GM.getValue
 // @grant        GM.setValue
 // @downloadURL  https://raw.githubusercontent.com/bjornodinsson89/odin-flight-tracker/main/Odin%20FlightTracker.user.js
-// @updateURL    https://raw.githubusercontent.com/bjornodinsson89/odin-flight-tracker/main/Odin%20FlightTracker.user.js
+// @updateURL    https://raw.githubusercontent.com/bjornodinsson89/odin-flight-tracker/main/Odin%20FlightTracker.meta.js
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -515,6 +515,8 @@
                 isEnemy: this.isEnemy,
                 isFactionMember: this.isFactionMember,
                 isManual: this.isManual,
+                _enemySource: this._enemySource || null,
+                _enemyFactionId: this._enemyFactionId || null,
                 _prevTraveling: this.lastState,
                 _timerValid: this.timer_valid
             };
@@ -533,6 +535,8 @@
             person.isEnemy = !!data.isEnemy;
             person.isFactionMember = !!data.isFactionMember;
             person.isManual = !!data.isManual;
+            person._enemySource = data._enemySource || null;
+            person._enemyFactionId = sanitizeId(data._enemyFactionId);
             person.lastState = ('_prevTraveling' in data) ? !!data._prevTraveling : undefined;
             person.timer_valid = !!data._timerValid;
             return person;
@@ -578,6 +582,12 @@
         });
         CONFIG.trackedState = state;
         saveConfig();
+    }
+
+    function clearTrackedStateNow() {
+        trackedPersons.clear();
+        CONFIG.trackedState = {};
+        persistTrackedState();
     }
 
     function restoreTrackedState() {
@@ -788,42 +798,15 @@
     }
 
     async function pollEnemies() {
-        if (!CONFIG.trackEnemies) return;
+        if (!CONFIG.trackEnemies || CONFIG.trackingMode !== 'auto') return;
 
-        let enemyIds = extractEnemyIds();
-        if (enemyIds.length === 0) return;
-
-        let activeEnemyIds = new Set(enemyIds);
-
-        for (let id of enemyIds) {
-            let userData = await fetchUserStatus(id);
-            if (!userData) continue;
-
-            let tracked = trackedPersons.get(id);
-            let wasTraveling = tracked ? tracked.lastState : undefined;
-
-            if (!tracked) {
-                tracked = new TrackedPerson(id, userData.name);
-                trackedPersons.set(id, tracked);
-            }
-            tracked.isEnemy = true;
-            tracked.name = userData.name || tracked.name;
-            tracked.updateFromStatus(userData.status);
-
-            if (wasTraveling === false && tracked.traveling) {
-                fireTravelStartToast(tracked);
-            }
+        let opponentFactionId = await resolveAutoEnemyFactionId();
+        if (opponentFactionId) {
+            await pollEnemyFactionById(opponentFactionId);
+            return;
         }
 
-        if (activeEnemyIds.size > 0) {
-            trackedPersons.forEach((person, id) => {
-                if (person.isEnemy && !person.isFactionMember && !activeEnemyIds.has(id) && !person.traveling) {
-                    trackedPersons.delete(id);
-                }
-            });
-        }
-
-        persistTrackedState();
+        await pollVisibleEnemies();
     }
 
     async function pollManualTarget() {
@@ -887,11 +870,170 @@
 
     function extractEnemyIds() {
         let ids = new Set();
-        document.querySelectorAll('li.enemy a[href*="profiles.php?XID="]').forEach(link => {
+        let selectors = [
+            'li.enemy a[href*="profiles.php?XID="]',
+            '[class*="enemy"] a[href*="profiles.php?XID="]',
+            '[data-team="enemy"] a[href*="profiles.php?XID="]',
+            '[data-side="enemy"] a[href*="profiles.php?XID="]'
+        ];
+        document.querySelectorAll(selectors.join(',')).forEach(link => {
             let match = link.href.match(/XID=(\d+)/);
-            if (match) ids.add(parseInt(match[1]));
+            if (match) ids.add(parseInt(match[1], 10));
         });
         return Array.from(ids);
+    }
+
+    function getByPath(obj, path) {
+        let out = obj;
+        for (let key of path) {
+            if (!out || typeof out !== 'object') return undefined;
+            out = out[key];
+        }
+        return out;
+    }
+
+    function collectObjectsDeep(node, out, depth = 0) {
+        if (!node || depth > 5) return;
+        if (Array.isArray(node)) {
+            node.forEach(item => collectObjectsDeep(item, out, depth + 1));
+            return;
+        }
+        if (typeof node !== 'object') return;
+        out.push(node);
+        Object.values(node).forEach(val => collectObjectsDeep(val, out, depth + 1));
+    }
+
+    function looksLikeRankedWarStatus(value) {
+        let s = String(value || '').toLowerCase();
+        if (!s) return false;
+        let ranked = s.includes('ranked');
+        let activeLike = ['matched', 'matching', 'starting', 'active', 'war', 'battle', 'in progress', 'in_progress'].some(t => s.includes(t));
+        return ranked || activeLike;
+    }
+
+    function extractOpponentIdFromWarNode(node) {
+        if (!node || typeof node !== 'object') return null;
+
+        let candidatePaths = [
+            ['opponent', 'id'], ['opponent_id'], ['enemy', 'id'], ['enemy_id'],
+            ['target', 'id'], ['target_id'], ['enemy_faction_id'], ['opponent_faction_id'],
+            ['faction', 'id'], ['faction_id']
+        ];
+        for (let path of candidatePaths) {
+            let id = sanitizeId(getByPath(node, path));
+            if (id) return id;
+        }
+        return null;
+    }
+
+    async function resolveAutoEnemyFactionId() {
+        let data = await apiRequest('faction?selections=warfare,wars', CONFIG.apiKey);
+        if (!data || typeof data !== 'object') return null;
+
+        let currentFactionId = sanitizeId(data.faction_id || data.faction?.id);
+        let nodes = [];
+        collectObjectsDeep(data.warfare, nodes);
+        collectObjectsDeep(data.wars, nodes);
+        collectObjectsDeep(data, nodes);
+
+        for (let node of nodes) {
+            let statusParts = [
+                node.type, node.war_type, node.kind, node.category, node.state, node.status, node.phase, node.result
+            ].filter(Boolean);
+            if (!statusParts.some(looksLikeRankedWarStatus)) continue;
+
+            let opponentId = extractOpponentIdFromWarNode(node);
+            if (!opponentId) continue;
+            if (currentFactionId && opponentId === currentFactionId) continue;
+            return opponentId;
+        }
+        return null;
+    }
+
+    function pruneAutoEnemies(activeSource, activeIds) {
+        trackedPersons.forEach((person, id) => {
+            if (!person || !person.isEnemy || person.isManual) return;
+            if (!person._enemySource) return;
+
+            let sourceMatches = activeSource && person._enemySource === activeSource;
+            let idIsActive = !!(activeIds && activeIds.has(id));
+            if (sourceMatches && idIsActive) return;
+
+            person.isEnemy = false;
+            person._enemySource = null;
+            person._enemyFactionId = null;
+
+            if (!person.isFactionMember && !person.isManual && !person.traveling) {
+                trackedPersons.delete(id);
+            }
+        });
+    }
+
+    async function pollEnemyFactionById(factionId) {
+        let safeFactionId = sanitizeId(factionId);
+        if (!safeFactionId) {
+            pruneAutoEnemies(null, new Set());
+            persistTrackedState();
+            return;
+        }
+
+        let members = await fetchFactionMembers(safeFactionId);
+        let source = `faction:${safeFactionId}`;
+        let activeIds = new Set();
+
+        for (let member of members) {
+            activeIds.add(member.id);
+            let tracked = trackedPersons.get(member.id);
+            let wasTraveling = tracked ? tracked.lastState : undefined;
+            if (!tracked) {
+                tracked = new TrackedPerson(member.id, member.name);
+                trackedPersons.set(member.id, tracked);
+            }
+            tracked.isEnemy = true;
+            tracked.isManual = !!tracked.isManual;
+            tracked._enemySource = source;
+            tracked._enemyFactionId = safeFactionId;
+            tracked.name = member.name || tracked.name;
+            tracked.updateFromStatus(member.status);
+
+            if (wasTraveling === false && tracked.traveling) {
+                fireTravelStartToast(tracked);
+            }
+        }
+
+        pruneAutoEnemies(source, activeIds);
+        persistTrackedState();
+    }
+
+    async function pollVisibleEnemies() {
+        let enemyIds = extractEnemyIds();
+        let activeEnemyIds = new Set(enemyIds);
+        let source = 'dom';
+
+        for (let id of enemyIds) {
+            let userData = await fetchUserStatus(id);
+            if (!userData) continue;
+
+            let tracked = trackedPersons.get(id);
+            let wasTraveling = tracked ? tracked.lastState : undefined;
+
+            if (!tracked) {
+                tracked = new TrackedPerson(id, userData.name);
+                trackedPersons.set(id, tracked);
+            }
+            tracked.isEnemy = true;
+            tracked._enemySource = source;
+            tracked._enemyFactionId = null;
+            tracked.name = userData.name || tracked.name;
+            tracked.updateFromStatus(userData.status);
+
+            if (wasTraveling === false && tracked.traveling) {
+                fireTravelStartToast(tracked);
+            }
+        }
+
+        pruneAutoEnemies(source, activeEnemyIds);
+        persistTrackedState();
     }
 
     function startPolling() {
@@ -926,8 +1068,16 @@
         }
 
         if (CONFIG.trackingMode === 'auto' && CONFIG.trackEnemies) {
-            pollEnemies();
-            enemyPollTimer = setInterval(pollEnemies, CONFIG.enemyPollInterval);
+            let runEnemyPoll = async () => {
+                try {
+                    await pollEnemies();
+                } catch (e) {
+                    console.error('Odin FlightTracker: enemy poll loop failed', e);
+                }
+                markUIDirty();
+            };
+            runEnemyPoll();
+            enemyPollTimer = setInterval(runEnemyPoll, CONFIG.enemyPollInterval);
         }
     }
 
@@ -1867,6 +2017,7 @@
 
         let saveHandler = () => {
             let prevTrackingMode = CONFIG.trackingMode;
+            let prevManualTargetType = CONFIG.manualTarget.type;
             let prevManualTargetId = CONFIG.manualTarget.id;
 
             let apiKeyInput = modal.querySelector('#odin-apikey').value;
@@ -1898,9 +2049,10 @@
                 if (dbg) dbg.remove();
             }
 
-            if (prevTrackingMode !== CONFIG.trackingMode ||
-                (CONFIG.trackingMode === 'manual' && prevManualTargetId !== CONFIG.manualTarget.id)) {
-                trackedPersons.clear();
+            let trackingModeChanged = prevTrackingMode !== CONFIG.trackingMode;
+            let manualTargetChanged = prevManualTargetType !== CONFIG.manualTarget.type || prevManualTargetId !== CONFIG.manualTarget.id;
+            if (trackingModeChanged || manualTargetChanged) {
+                clearTrackedStateNow();
             }
 
             saveConfig();
