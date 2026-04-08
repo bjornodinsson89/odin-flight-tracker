@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Odin FlightTracker
-// @version      1.0.8
+// @version      1.0.9
 // @description  Flight Tracking
 // @author       BjornOdinsson89
 // @icon         https://i.postimg.cc/BQ6bSYKM/file-000000004bb071f5a96fc52564bf26ad-(1).png

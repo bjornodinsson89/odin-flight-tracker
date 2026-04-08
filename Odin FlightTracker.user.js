@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Odin FlightTracker
-// @version      1.0.8
+// @version      1.0.9
 // @description  Flight Tracking
 // @author       BjornOdinsson89
 // @icon         https://i.postimg.cc/BQ6bSYKM/file-000000004bb071f5a96fc52564bf26ad-(1).png
@@ -37,6 +37,7 @@
         },
         quickViewTab: 'enemies'
     };
+    const MIN_POLL_INTERVAL = 3000;
 
     const storageCompat = (() => {
         let gmObj = (typeof GM === 'object' && GM) ? GM : null;
@@ -157,13 +158,9 @@
     }
 
     function normalizeLoadedConfig() {
-        let toNum = v => {
-            let n = Number(v);
-            return (Number.isFinite(n) && n > 0) ? n : null;
-        };
-        CONFIG.factionPollInterval = toNum(CONFIG.factionPollInterval) || DEFAULT_CONFIG.factionPollInterval;
-        CONFIG.manualPollInterval = toNum(CONFIG.manualPollInterval) || DEFAULT_CONFIG.manualPollInterval;
-        CONFIG.enemyPollInterval = toNum(CONFIG.enemyPollInterval) || DEFAULT_CONFIG.enemyPollInterval;
+        CONFIG.factionPollInterval = parsePollInterval(CONFIG.factionPollInterval, DEFAULT_CONFIG.factionPollInterval);
+        CONFIG.manualPollInterval = parsePollInterval(CONFIG.manualPollInterval, DEFAULT_CONFIG.manualPollInterval);
+        CONFIG.enemyPollInterval = parsePollInterval(CONFIG.enemyPollInterval, DEFAULT_CONFIG.enemyPollInterval);
 
         let at = CONFIG.alertSettings;
         if (!at || typeof at !== 'object') at = {};
@@ -208,6 +205,12 @@
         storageCompat.setValue('odin_ft_manualtarget', CONFIG.manualTarget);
         storageCompat.setValue('odin_ft_alertsettings', CONFIG.alertSettings);
         storageCompat.setValue('odin_ft_quickviewtab', CONFIG.quickViewTab);
+    }
+
+    function parsePollInterval(value, fallback) {
+        let parsed = parseInt(value, 10);
+        if (!Number.isFinite(parsed) || parsed < MIN_POLL_INTERVAL) return fallback;
+        return parsed;
     }
 
     const TRAVEL_TABLE = {
@@ -515,6 +518,7 @@
                 isEnemy: this.isEnemy,
                 isFactionMember: this.isFactionMember,
                 isManual: this.isManual,
+                _trackSource: this._trackSource || null,
                 _enemySource: this._enemySource || null,
                 _enemyFactionId: this._enemyFactionId || null,
                 _prevTraveling: this.lastState,
@@ -535,6 +539,7 @@
             person.isEnemy = !!data.isEnemy;
             person.isFactionMember = !!data.isFactionMember;
             person.isManual = !!data.isManual;
+            person._trackSource = data._trackSource || null;
             person._enemySource = data._enemySource || null;
             person._enemyFactionId = sanitizeId(data._enemyFactionId);
             person.lastState = ('_prevTraveling' in data) ? !!data._prevTraveling : undefined;
@@ -587,6 +592,32 @@
     function clearTrackedStateNow() {
         trackedPersons.clear();
         CONFIG.trackedState = {};
+        persistTrackedState();
+    }
+
+    function clearTrackedEntriesBySource(sourcePrefix) {
+        if (!sourcePrefix) return;
+        trackedPersons.forEach((person, id) => {
+            if (!person) return;
+
+            let manualMatch = typeof person._trackSource === 'string' && person._trackSource.startsWith(sourcePrefix);
+            let enemyMatch = typeof person._enemySource === 'string' && person._enemySource.startsWith(sourcePrefix);
+            if (!manualMatch && !enemyMatch) return;
+
+            if (manualMatch) {
+                person.isManual = false;
+                person._trackSource = null;
+            }
+            if (enemyMatch) {
+                person.isEnemy = false;
+                person._enemySource = null;
+                person._enemyFactionId = null;
+            }
+
+            if (!person.isFactionMember && !person.isManual && !person.isEnemy && !person.traveling) {
+                trackedPersons.delete(id);
+            }
+        });
         persistTrackedState();
     }
 
@@ -778,7 +809,6 @@
                     trackedPersons.set(member.id, tracked);
                 }
                 tracked.isFactionMember = true;
-                tracked.isManual = false;
                 tracked.name = member.name || tracked.name;
                 tracked.updateFromStatus(member.status);
             }
@@ -825,7 +855,8 @@
                     }
                     tracked.isManual = true;
                     tracked.isEnemy = true;
-                    tracked.isFactionMember = false;
+                    tracked._trackSource = `manual:faction:${CONFIG.manualTarget.id}`;
+                    tracked._enemySource = `manual:faction:${CONFIG.manualTarget.id}`;
                     tracked.name = member.name || tracked.name;
                     tracked.updateFromStatus(member.status);
 
@@ -855,7 +886,8 @@
                 }
                 tracked.isManual = true;
                 tracked.isEnemy = true;
-                tracked.isFactionMember = false;
+                tracked._trackSource = `manual:user:${CONFIG.manualTarget.id}`;
+                tracked._enemySource = `manual:user:${CONFIG.manualTarget.id}`;
                 tracked.name = userData.name || tracked.name;
                 tracked.updateFromStatus(userData.status);
 
@@ -917,6 +949,7 @@
         let candidatePaths = [
             ['opponent', 'id'], ['opponent_id'], ['enemy', 'id'], ['enemy_id'],
             ['target', 'id'], ['target_id'], ['enemy_faction_id'], ['opponent_faction_id'],
+            ['opponent', 'faction_id'], ['enemy', 'faction_id'], ['target', 'faction_id'],
             ['faction', 'id'], ['faction_id']
         ];
         for (let path of candidatePaths) {
@@ -978,7 +1011,7 @@
         }
 
         let members = await fetchFactionMembers(safeFactionId);
-        let source = `faction:${safeFactionId}`;
+        let source = `auto:faction:${safeFactionId}`;
         let activeIds = new Set();
 
         for (let member of members) {
@@ -1008,7 +1041,7 @@
     async function pollVisibleEnemies() {
         let enemyIds = extractEnemyIds();
         let activeEnemyIds = new Set(enemyIds);
-        let source = 'dom';
+        let source = 'auto:dom';
 
         for (let id of enemyIds) {
             let userData = await fetchUserStatus(id);
@@ -1929,17 +1962,17 @@
 
             <div style="margin-bottom:16px">
                 <label style="display:block; margin-bottom:4px; font-size:12px; color:#999">Faction Poll Interval (ms)</label>
-                <input type="number" id="odin-pollinterval-faction" value="${CONFIG.factionPollInterval}" min="15000" style="width:100%; padding:8px; background:#2a2f36; color:#fff; border:1px solid #3a3f46; border-radius:4px; box-sizing:border-box">
+                <input type="number" id="odin-pollinterval-faction" value="${CONFIG.factionPollInterval}" min="3000" style="width:100%; padding:8px; background:#2a2f36; color:#fff; border:1px solid #3a3f46; border-radius:4px; box-sizing:border-box">
             </div>
 
             <div style="margin-bottom:16px">
                 <label style="display:block; margin-bottom:4px; font-size:12px; color:#999">Enemy Poll Interval (ms)</label>
-                <input type="number" id="odin-pollinterval-enemy" value="${CONFIG.enemyPollInterval}" min="15000" style="width:100%; padding:8px; background:#2a2f36; color:#fff; border:1px solid #3a3f46; border-radius:4px; box-sizing:border-box">
+                <input type="number" id="odin-pollinterval-enemy" value="${CONFIG.enemyPollInterval}" min="3000" style="width:100%; padding:8px; background:#2a2f36; color:#fff; border:1px solid #3a3f46; border-radius:4px; box-sizing:border-box">
             </div>
 
             <div style="margin-bottom:16px">
                 <label style="display:block; margin-bottom:4px; font-size:12px; color:#999">Manual Target Poll Interval (ms)</label>
-                <input type="number" id="odin-pollinterval-manual" value="${CONFIG.manualPollInterval}" min="15000" style="width:100%; padding:8px; background:#2a2f36; color:#fff; border:1px solid #3a3f46; border-radius:4px; box-sizing:border-box">
+                <input type="number" id="odin-pollinterval-manual" value="${CONFIG.manualPollInterval}" min="3000" style="width:100%; padding:8px; background:#2a2f36; color:#fff; border:1px solid #3a3f46; border-radius:4px; box-sizing:border-box">
             </div>
 
             <h4 style="color:#ff6600; font-size:13px; margin:16px 0 8px">Tracking Mode</h4>
@@ -2025,16 +2058,12 @@
                 CONFIG.apiKey = apiKeyInput;
             }
 
-            let parseInterval = (value, fallback) => {
-                let parsed = parseInt(value, 10);
-                return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-            };
-            CONFIG.factionPollInterval = parseInterval(modal.querySelector('#odin-pollinterval-faction').value, DEFAULT_CONFIG.factionPollInterval);
-            CONFIG.enemyPollInterval = parseInterval(modal.querySelector('#odin-pollinterval-enemy').value, DEFAULT_CONFIG.enemyPollInterval);
-            CONFIG.manualPollInterval = parseInterval(modal.querySelector('#odin-pollinterval-manual').value, DEFAULT_CONFIG.manualPollInterval);
+            CONFIG.factionPollInterval = parsePollInterval(modal.querySelector('#odin-pollinterval-faction').value, DEFAULT_CONFIG.factionPollInterval);
+            CONFIG.enemyPollInterval = parsePollInterval(modal.querySelector('#odin-pollinterval-enemy').value, DEFAULT_CONFIG.enemyPollInterval);
+            CONFIG.manualPollInterval = parsePollInterval(modal.querySelector('#odin-pollinterval-manual').value, DEFAULT_CONFIG.manualPollInterval);
             CONFIG.trackingMode = modal.querySelector('input[name="tracking-mode"]:checked').value;
             CONFIG.manualTarget.type = modal.querySelector('#manual-type').value;
-            CONFIG.manualTarget.id = parseInt(modal.querySelector('#manual-id').value) || null;
+            CONFIG.manualTarget.id = sanitizeId(modal.querySelector('#manual-id').value);
 
             CONFIG.alertSettings.enabled = modal.querySelector('#alert-enabled').checked;
             CONFIG.alertSettings.sound = modal.querySelector('#alert-sound').checked;
@@ -2051,8 +2080,11 @@
 
             let trackingModeChanged = prevTrackingMode !== CONFIG.trackingMode;
             let manualTargetChanged = prevManualTargetType !== CONFIG.manualTarget.type || prevManualTargetId !== CONFIG.manualTarget.id;
+            let prevManualSource = prevManualTargetId ? `manual:${prevManualTargetType}:${prevManualTargetId}` : null;
             if (trackingModeChanged || manualTargetChanged) {
-                clearTrackedStateNow();
+                clearTrackedEntriesBySource('manual:');
+                if (prevManualSource) clearTrackedEntriesBySource(prevManualSource);
+                if (prevTrackingMode === 'auto') clearTrackedEntriesBySource('auto:');
             }
 
             saveConfig();
